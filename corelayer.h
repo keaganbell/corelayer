@@ -110,6 +110,17 @@
 
 
 
+/*== Compiler Warnings ==================================*/
+
+#if COMPILER_MSVC
+/* negative sign on unsigned type */
+#pragma warning(disable: 4146)
+
+/* trancation double to float */
+#pragma warning(disable: 4305)
+#endif
+
+
 
 /*== Aliases ============================================*/
 

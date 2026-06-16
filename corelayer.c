@@ -11,7 +11,7 @@ function f32 f32_lerp(f32 a, f32 b, f32 t) {
 }
 
 function u32 u32_lerp(u32 a, u32 b, f32 t) {
-    return a + (a + b)*t;
+    return a + (u32)((a + b)*t);
 }
 
 /* evenly distributes m_count into n_count ranges and returns the n_idx'th range */
@@ -71,7 +71,7 @@ function Vec3f32 vec3_negate(Vec3f32 v) {
     return result;
 }
 function Vec3f32 vec3_absf(Vec3f32 v) {
-    Vec3f32 result = {.x = fabs(v.x), .y = fabs(v.y), .z = fabs(v.z)};
+    Vec3f32 result = {.x = fabsf(v.x), .y = fabsf(v.y), .z = fabsf(v.z)};
     return result;
 }
 function Vec3f32 vec3_lerp(Vec3f32 a, Vec3f32 b, f32 t) {
@@ -126,7 +126,7 @@ function Vec3f32 vec3_refract(Vec3f32 v, Vec3f32 n, f32 n1_over_n2) {
     Vec3f32 perp = vec3_add(v, vn);
     perp = vec3_scale(perp, n1_over_n2);
     f32 perp_length_squared = vec3_dot(perp, perp);
-    f32 scale = -sqrtf(fabs(1.0f - perp_length_squared));
+    f32 scale = -sqrtf(fabsf(1.0f - perp_length_squared));
     Vec3f32 parallel = vec3_scale(n, scale);
     Vec3f32 result = vec3_add(perp, parallel);
     return result;
@@ -277,7 +277,7 @@ function u32 rand_u32(void) {
 function u32 rand_u32_r(Rand_State *rng) {
     u64 old_state = rng->state;
     rng->state = old_state*6364136223846793005ULL + rng->inc;
-    u32 xorshifted = ((old_state >> 18u) ^ old_state) >> 27u;
+    u32 xorshifted = (u32)(((old_state >> 18u) ^ old_state) >> 27u);
     u32 rot = old_state >> 59u;
     u32 result = ((xorshifted >> rot) | (xorshifted << ((-rot) & 31)));
     return result;
