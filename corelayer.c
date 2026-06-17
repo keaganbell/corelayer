@@ -287,7 +287,7 @@ function i32 rand_i32_in_range(i32 min, i32 max) {
 }
 function i32 rand_i32_in_range_r(Rand_State *rng, i32 min, i32 max) {
     i32 span = max - min;
-    i32 result = min + ((i32)rand_u32_r(rng) % span);
+    i32 result = min + (abs((i32)rand_u32_r(rng)) % span);
     return result;
 }
 

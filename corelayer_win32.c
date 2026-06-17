@@ -53,6 +53,8 @@ global struct {
 #ifndef NO_ENTRY_POINT
 
 int main(int argc, char **argv) {
+
+    /* initialize runtime clock */
     win32_state.microsecond_frequency = 1;
     LARGE_INTEGER freq;
     if (QueryPerformanceFrequency(&freq)) {
@@ -70,12 +72,10 @@ int main(int argc, char **argv) {
     Arena arena = arena_init(memory, size);
 
     /* setup the thread context */
-    tctx = tctx_init(&arena);
+    tctx = tctx_init(&arena, .name = str8_lit("Main"));
 
     /* allocate windows memory */
     win32_state.arena = arena_alloc(&arena, MiB(32));
-
-    /* initialize runtime clock */
 
     /* try to allow large pages */
     b32 large_pages_allowed = false;
