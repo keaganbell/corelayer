@@ -1259,6 +1259,7 @@ function u64 now_time_unix(void);
 function void sleep_ms(u32 ms);
 
 /* reads an entire file into a string */
+// TODO: make this os specific and add more features
 function String8 read_entire_file(Arena *arena, String8 filename);
 
 
