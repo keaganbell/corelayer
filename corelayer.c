@@ -308,11 +308,11 @@ function f32 rand_f32_r(Rand_State *rng) {
 function Arena *arena_alloc(u64 min_cap) {
     u64 clamped_cap = biggest(default_arena_capacity, min_cap);
     u64 req_size = clamped_cap + ARENA_HEADER_SIZE;
-    printf("arena - %llu min, %llu actual, %llu total allocated\n", min_cap, clamped_cap, req_size);
-    void *memory = _aligned_malloc(default_arena_page_alignment, req_size);
+    void *memory = _aligned_malloc(req_size, default_arena_page_alignment);
     mem_zero(memory, req_size);
 
     Arena *result = (Arena *)memory;
+    result->current = result;
     result->base = (u8 *)memory + ARENA_HEADER_SIZE;
     result->cap = clamped_cap;
 
