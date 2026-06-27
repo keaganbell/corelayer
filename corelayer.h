@@ -635,34 +635,34 @@ check_nil(nil,p) ? \
 
 /*== Basic Constants ====================================*/
 
-global u32 sign32     = 0x80000000;
-global u32 exponent32 = 0x7F800000;
-global u32 mantissa32 = 0x007FFFFF;
+global const u32 sign32     = 0x80000000;
+global const u32 exponent32 = 0x7F800000;
+global const u32 mantissa32 = 0x007FFFFF;
 
-global f32   big_golden32 = 1.61803398875f;
-global f32 small_golden32 = 0.61803398875f;
+global const f32   big_golden32 = 1.61803398875f;
+global const f32 small_golden32 = 0.61803398875f;
 
-global f32 pi32 = 3.1415926535897f;
+global const f32 pi32 = 3.1415926535897f;
 
-global f64 machine_epsilon64 = 4.94065645841247e-324;
+global const f64 machine_epsilon64 = 4.94065645841247e-324;
 
-global u64 max_u64 = 0xffffffffffffffffull;
-global u32 max_u32 = 0xffffffff;
-global u16 max_u16 = 0xffff;
-global u8  max_u8  = 0xff;
+global const u64 max_u64 = 0xffffffffffffffffull;
+global const u32 max_u32 = 0xffffffff;
+global const u16 max_u16 = 0xffff;
+global const u8  max_u8  = 0xff;
 
-global i64 max_i64 = (i64)0x7fffffffffffffffll;
-global i32 max_i32 = (i32)0x7fffffff;
-global i16 max_i16 = (i16)0x7fff;
-global i8  max_i8  =  (i8)0x7f;
+global const i64 max_i64 = (i64)0x7fffffffffffffffll;
+global const i32 max_i32 = (i32)0x7fffffff;
+global const i16 max_i16 = (i16)0x7fff;
+global const i8  max_i8  =  (i8)0x7f;
 
-global i64 min_i64 = (i64)0x8000000000000000ll;
-global i32 min_i32 = (i32)0x80000000;
-global i16 min_i16 = (i16)0x8000;
-global i8  min_i8  =  (i8)0x80;
+global const i64 min_i64 = (i64)0x8000000000000000ll;
+global const i32 min_i32 = (i32)0x80000000;
+global const i16 min_i16 = (i16)0x8000;
+global const i8  min_i8  =  (i8)0x80;
 
-global f32 max_f32 = (f32)0x7f7fffff;
-global f64 max_f64 = (f64)0x7fefffffffffffff;
+global const f32 max_f32 = (f32)0x7f7fffff;
+global const f64 max_f64 = (f64)0x7fefffffffffffff;
 
 global const u32 bitmask1  = 0x00000001;
 global const u32 bitmask2  = 0x00000003;
@@ -838,17 +838,31 @@ read_only global u8 base64_reverse[128] =
 
 /*== Arenas =============================================*/
 
-typedef struct {
+global const u64 default_arena_capacity = MiB(4);
+global const u64 default_arena_page_alignment = KiB(4);
+
+typedef struct Arena Arena;
+struct Arena {
+    Arena *prev;
+    Arena *current;
+
+    // global offset
+    u64 offset;
+
+    // local offset
     void *base;
-    u64 pos, cap;
-    int temp_count;
-} Arena;
+    u64 pos;
+    u64 cap;
+};
+
+#define ARENA_HEADER_SIZE 128
+static_assert(sizeof(Arena) <= ARENA_HEADER_SIZE, arena_header_size_check);
 
 /* arena api */
-function Arena arena_alloc(Arena *arena, u64 cap);
-function Arena arena_init(void *base, u64 cap);
+function Arena *arena_alloc(u64 min_cap);
+function void arena_free(Arena *arena);
 function void arena_reset(Arena *arena);
-function void arena_rewind(Arena *arena, u64 pos);
+function void arena_rewind(Arena *arena, u64 mark);
 function u64 arena_pos(Arena *arena);
 function void *arena_push(Arena *arena, u64 size, u64 align, b32 clear);
 
@@ -857,16 +871,14 @@ function void *arena_push(Arena *arena, u64 size, u64 align, b32 clear);
 #define push_array_aligned(a, T, c, align) (T *)arena_push((a), sizeof(T)*(c), (align), (1))
 #define push_array_no_zero(a, T, c) push_array_no_zero_aligned(a, T, c, biggest(8, alignof(T)))
 #define push_array(a, T, c) push_array_aligned(a, T, c, biggest(8, alignof(T)))
-#define push_struct(a, T) push_array(a, T, (1))
 
 /* temp arenas */
 typedef struct {
     Arena *arena;
-    u64 saved_pos;
-    int saved_temp_count;
+    u64 mark;
 } Temp_Arena;
 function Temp_Arena begin_temp(Arena *arena);
-function void end_temp(Temp_Arena *arena);
+function void end_temp(Temp_Arena arena);
 
 
 
@@ -1038,11 +1050,11 @@ struct Log_Frame {
     Log_Frame *next;
     Log_Message *first;
     Log_Message *last;
-    u64 arena_pos;
+    u64 arena_mark;
 };
 
 typedef struct {
-    Arena arena;
+    Arena *arena;
     Log_Frame *top_frame;
 } Log_Context;
 
@@ -1188,7 +1200,8 @@ typedef struct {
 } Lane_Context;
 
 typedef struct {
-    Arena arenas[2];
+    Arena *arena;
+    Arena *arenas[2];
     String8 name;
     Log_Context log;
     Lane_Context lane_ctx;
@@ -1202,8 +1215,8 @@ typedef struct {
     u64 log_size;
 } Thread_Context_Params;
 
-function Thread_Context *tctx_init_(Arena *arena, Thread_Context_Params *params);
-#define tctx_init(arena, ...) tctx_init_(arena, &(Thread_Context_Params){ __VA_ARGS__ })
+function Thread_Context *tctx_init_(Arena *arena, String8 name, Thread_Context_Params *params);
+#define tctx_init(arena, name, ...) tctx_init_(arena, name, &(Thread_Context_Params){ __VA_ARGS__ })
 
 /* set the thread_static context pointer */
 function void tctx_select(Thread_Context *ctx);
@@ -1211,7 +1224,7 @@ function void tctx_select(Thread_Context *ctx);
 /* grab context through function call to avoid caching during async operations */
 function Thread_Context *tctx_selected(void);
 
-function Arena *tctx_get_scratch(Arena *conflicts, i32 count);
+function Arena *tctx_get_scratch(Arena **conflicts, i32 count);
 #define begin_scratch(arena, count) begin_temp(tctx_get_scratch(arena, count))
 #define release_scratch(scratch) end_temp(scratch)
 
@@ -1272,16 +1285,11 @@ typedef struct {
     u64 args_count;
 } Cmd_Line;
 
-/* default program memory */
-#ifndef PROGRAM_MEMORY_CAPACITY
-#define PROGRAM_MEMORY_CAPACITY GiB(8)
-#endif
-
 /* called by the platform */
 void entry_point_caller(Arena *arena, i32 argc, char **argv);
 
 /* filled out by the application */
-void entry_point(Arena *arena, Cmd_Line cmdline);
+void entry_point(Cmd_Line cmdline);
 
 /* filled out by the application */
 void async_entry_point(void *thread_params);

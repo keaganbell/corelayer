@@ -36,7 +36,7 @@ function Win32_Object *win32_object_alloc(Win32_Object_Kind kind);
 function void win32_object_free(Win32_Object *obj);
 
 global struct {
-    Arena arena;
+    Arena *arena;
 
     /* info */
     System_Info info;
@@ -45,7 +45,7 @@ global struct {
 
     /* sync allocation */
     CRITICAL_SECTION object_mutex;
-    Arena object_arena;
+    Arena *object_arena;
     Win32_Object *free_objects;
 } win32_state;
 
@@ -61,21 +61,12 @@ int main(int argc, char **argv) {
         win32_state.microsecond_frequency = freq.QuadPart;
     }
     win32_state.start_time = now_time_us();
-    
-    /* allocate the program's memory */
-    u64 size = PROGRAM_MEMORY_CAPACITY;
-    void *memory = VirtualAlloc(0, (size), MEM_RESERVE|MEM_COMMIT, PAGE_READWRITE);
-    if (!memory) {
-        fprintf(stderr, "Failed to allocate %zu bytes of memory.\n", size);
-        return 1;
-    }
-    Arena arena = arena_init(memory, size);
-
-    /* setup the thread context */
-    tctx = tctx_init(&arena, .name = str8_lit("Main"));
 
     /* allocate windows memory */
-    win32_state.arena = arena_alloc(&arena, MiB(32));
+    win32_state.arena = arena_alloc(MiB(32));
+
+    /* setup the thread context */
+    tctx = tctx_init(win32_state.arena, str8_lit("Main"));
 
     /* try to allow large pages */
     b32 large_pages_allowed = false;
@@ -104,7 +95,7 @@ int main(int argc, char **argv) {
 
     /* sync object allocation */
     InitializeCriticalSection(&win32_state.object_mutex);
-    win32_state.object_arena = arena_alloc(&arena, MiB(8));
+    win32_state.object_arena = arena_alloc(MiB(8));
 
     /* initialize windows specific layers */
     // window allocations
@@ -112,7 +103,7 @@ int main(int argc, char **argv) {
     //  - audio
     //  - gamepad
 
-    entry_point_caller(&arena, argc, argv);
+    entry_point_caller(win32_state.arena, argc, argv);
 
     return 0;
 }
@@ -158,7 +149,7 @@ function Win32_Object *win32_object_alloc(Win32_Object_Kind kind) {
         if (result) {
             sll_stack_pop(win32_state.free_objects);
         } else {
-            result = push_array_no_zero(&win32_state.object_arena, Win32_Object, 1);
+            result = push_array_no_zero(win32_state.object_arena, Win32_Object, 1);
         }
         debug_assert(result);
         mem_zero_struct(result);

@@ -305,64 +305,75 @@ function f32 rand_f32_r(Rand_State *rng) {
 
 /*== Arenas =============================================*/
 
-function Arena arena_init(void *base, u64 cap) {
-    Arena result = {0};
-    result.base = base;
-    result.cap = cap;
+function Arena *arena_alloc(u64 min_cap) {
+    u64 clamped_cap = biggest(default_arena_capacity, min_cap);
+    u64 req_size = clamped_cap + ARENA_HEADER_SIZE;
+    printf("arena - %llu min, %llu actual, %llu total allocated\n", min_cap, clamped_cap, req_size);
+    void *memory = _aligned_malloc(default_arena_page_alignment, req_size);
+    mem_zero(memory, req_size);
+
+    Arena *result = (Arena *)memory;
+    result->base = (u8 *)memory + ARENA_HEADER_SIZE;
+    result->cap = clamped_cap;
+
     return result;
 }
-
-function Arena arena_alloc(Arena *arena, u64 cap) {
-    Arena result = {0};
-    void *base = push_array(arena, u8, cap);
-    if (base) {
-        result = arena_init(base, cap);
-    }
-    return result;
-}
-
-function void arena_reset(Arena *arena) {
-    arena->pos = 0;
-}
-
-function void arena_rewind(Arena *arena, u64 pos) {
-    arena->pos = pos;
-}
-
-function u64 arena_pos(Arena *arena) {
-    return arena->pos;
-}
-
-function void *arena_push(Arena *arena, u64 size, u64 align, b32 clear) {
-    void *result = NULL;
+function void arena_free(Arena *arena) {
     if (arena) {
-        u64 aligned_pos = align_pow2(arena->pos + size, align);
-        if (aligned_pos < arena->cap) {
-            result = (char *)arena->base + arena->pos;
-            arena->pos = aligned_pos;
-            
-            if (clear) memset(result, 0, size);
-        } else {
-            // TODO: add more arena state to log more context about allocation
-            log_error(str8_lit("Arena out of memory!"));
+        for (Arena *n = arena->current, *prev = NULL; n != NULL; n = prev) {
+            prev = n->prev;
+            free(n);
         }
     }
+}
+function void arena_rewind(Arena *arena, u64 mark) {
+    Arena *current = arena->current;
+    Arena *first_arena_to_free = NULL;
+    u64 bytes_left_to_free = arena->offset - mark;
+    while (bytes_left_to_free > current->pos) {
+        first_arena_to_free = current;
+        bytes_left_to_free -= current->pos;
+        current = current->prev;
+    }
+    arena_free(first_arena_to_free);
+    arena->current = current;
+    arena->current->pos -= bytes_left_to_free;
+}
+function void arena_reset(Arena *arena) {
+    arena_rewind(arena, 0);
+}
+function u64 arena_mark(Arena *arena) {
+    return arena->offset;
+}
+function void *arena_push(Arena *arena, u64 size, u64 align, b32 clear) {
+    u64 pos = align_pow2(arena->current->pos, align);
+
+    if (pos + size > arena->current->cap) {
+        Arena *new_arena = arena_alloc(size);
+        new_arena->prev = arena->current;
+        arena->current = new_arena;
+        pos = align_pow2(arena->current->pos, align);
+    }
+
+    u64 alignment_amount = pos - arena->current->pos;
+    arena->offset += size + alignment_amount;
+
+    void *result = (u8 *)arena->current->base + pos;
+    arena->current->pos += alignment_amount + size;
+    mem_zero(result, size);
+
     return result;
 }
 
+/* temp arenas */
 function Temp_Arena begin_temp(Arena *arena) {
     Temp_Arena result = {0};
     result.arena = arena;
-    result.saved_pos = arena->pos;
-    result.saved_temp_count = arena->temp_count++;
+    result.mark = arena_mark(arena);
     return result;
 }
-
-function void end_temp(Temp_Arena *temp) {
-    temp->arena->temp_count -= 1;
-    debug_assert(temp->saved_temp_count == temp->arena->temp_count);
-    temp->arena->pos = temp->saved_pos;
-    temp->arena = 0;
+function void end_temp(Temp_Arena temp) {
+    arena_rewind(temp.arena, temp.mark);
 }
 
 
@@ -757,7 +768,7 @@ function String8_List str8_split(Arena *arena, String8 string, String8 separator
 
 /* list builders */
 function String8_Node *str8_list_push(Arena *arena, String8_List *list, String8 string) {
-    String8_Node *node = push_struct(arena, String8_Node);
+    String8_Node *node = push_array(arena, String8_Node, 1);
     if (node) {
         node->string = string;
         str8_list_push_node(list, node);
@@ -765,7 +776,7 @@ function String8_Node *str8_list_push(Arena *arena, String8_List *list, String8 
     return node;
 }
 function String8_Node *str8_list_push_front(Arena *arena, String8_List *list, String8 string) {
-    String8_Node *node = push_struct(arena, String8_Node);
+    String8_Node *node = push_array(arena, String8_Node, 1);
     if (node) {
         node->string = string;
         str8_list_push_node_front(list, node);
@@ -843,10 +854,10 @@ function String8 str8_list_join(Arena *arena, String8_List *list, String8_Join *
 
 function void log_frame_begin(void) {
     Log_Context *log = &tctx->log;
-    Log_Frame *frame = push_struct(&log->arena, Log_Frame);
+    Log_Frame *frame = push_array(log->arena, Log_Frame, 1);
     if (frame) {
         sll_stack_push(log->top_frame, frame);
-        frame->arena_pos = arena_pos(&log->arena);
+        frame->arena_mark = arena_mark(log->arena);
     }
 }
 
@@ -854,7 +865,7 @@ function String8 log_frame_peek(Arena *arena, int mask) {
     String8 result = {0};
     Log_Frame *frame = tctx_selected()->log.top_frame;
     if (frame && arena) {
-        Temp_Arena scratch = begin_scratch(arena, 1);
+        Temp_Arena scratch = begin_scratch(&arena, 1);
         String8_List list = {0};
         for (Log_Message *msg = frame->first; msg != 0; msg = msg->next) {
             if (mask == Log_Level_Info)
@@ -864,7 +875,7 @@ function String8 log_frame_peek(Arena *arena, int mask) {
             str8_list_pushf(scratch.arena, &list, "%.*s\n", str8_varg(msg->msg));
         }
         result = str8_list_join(arena, &list, 0);
-        release_scratch(&scratch);
+        release_scratch(scratch);
     }
     return result;
 }
@@ -877,7 +888,7 @@ function String8 log_frame_end(Arena *arena, int mask) {
         if (frame) {
             result = log_frame_peek(arena, mask);
             sll_stack_pop(log->top_frame);
-            arena_rewind(&log->arena, frame->arena_pos);
+            arena_rewind(log->arena, frame->arena_mark);
         }
     }
     return result;
@@ -894,9 +905,9 @@ function void log_emit(Log_Level level, String8 string) {
     Log_Context *log = &tctx_selected()->log;
     Log_Frame *frame = log->top_frame;
     if (frame) {
-        Log_Message *message = push_struct(&log->arena, Log_Message);
+        Log_Message *message = push_array(log->arena, Log_Message, 1);
         if (message) {
-            String8 copy = str8_copy(&log->arena, string);
+            String8 copy = str8_copy(log->arena, string);
             message->msg = copy;
             message->level = level;
             sll_queue_push(frame->first, frame->last, message);
@@ -911,7 +922,7 @@ function void log_emitf(Log_Level level, char *fmt, ...) {
     vsnprintf(buffer, sizeof(buffer), fmt, args);
     va_end(args);
     size_t len = strlen(buffer);
-    uint8_t *cstr = push_array(&tctx->log.arena, uint8_t, len);
+    uint8_t *cstr = push_array(tctx->log.arena, uint8_t, len);
     memcpy(cstr, buffer, len);
     log_emit(level, (String8){.ptr = cstr, .length = len});
 }
@@ -970,11 +981,11 @@ function void profiler_end_and_print(void) {
 
 /*== Thread Context =====================================*/
 
-function Thread_Context *tctx_init_(Arena *arena, Thread_Context_Params *params) {
-    Thread_Context *result = push_struct(arena, Thread_Context);
+function Thread_Context *tctx_init_(Arena *arena, String8 name, Thread_Context_Params *params) {
+    Thread_Context *result = push_array(arena, Thread_Context, 1);
     if (result) {
 
-        result->name = params->name;
+        result->name = name;
 
         /* initialize scratch arenas */
         size_t scratch_size = params->scratch_size;
@@ -988,9 +999,9 @@ function Thread_Context *tctx_init_(Arena *arena, Thread_Context_Params *params)
             log_size = MiB(4);
         }
 
-        result->arenas[0] = arena_alloc(arena, scratch_size);
-        result->arenas[1] = arena_alloc(arena, scratch_size);
-        result->log.arena = arena_alloc(arena, log_size);
+        result->arenas[0] = arena_alloc(scratch_size);
+        result->arenas[1] = arena_alloc(scratch_size);
+        result->log.arena = arena_alloc(log_size);
 
         /* initialize static rng */
         result->rand_state.state = 0x853c49e6748fea9bULL;
@@ -1000,7 +1011,7 @@ function Thread_Context *tctx_init_(Arena *arena, Thread_Context_Params *params)
     return result;
 }
 
-function Arena *tctx_get_scratch(Arena *conflicts, int count) {
+function Arena *tctx_get_scratch(Arena **conflicts, int count) {
     Arena *result = 0;
     if (tctx) {
         for (int i = 0; i < arrcount(tctx->arenas); i += 1) {
@@ -1012,7 +1023,7 @@ function Arena *tctx_get_scratch(Arena *conflicts, int count) {
                 }
             }
             if (!has_conflict) {
-                result = &tctx->arenas[i];
+                result = tctx->arenas[i];
                 break;
             }
         }
@@ -1085,7 +1096,7 @@ void entry_point_caller(Arena *arena, i32 argc, char **argv) {
         cmdline.args_count += 1;
     }
 
-    entry_point(arena, cmdline);
+    entry_point(cmdline);
 }
 
 
@@ -1093,5 +1104,7 @@ void entry_point_caller(Arena *arena, i32 argc, char **argv) {
 #include "corelayer_win32.c"
 #elif OS_LINUX
 #include "corelayer_linux.c"
+#elif OS_WEB
+#include "corelayer_wasm.c"
 #endif
 
