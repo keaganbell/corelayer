@@ -34,7 +34,7 @@ function Linux_Object *linux_object_alloc(Linux_Object_Kind kind);
 function void linux_object_free(Linux_Object *obj);
 
 global struct {
-    Arena arena;
+    Arena *arena;
 
     /* info */
     System_Info info;
@@ -43,7 +43,6 @@ global struct {
 
     /* sync allocation */
     pthread_mutex_t object_mutex;
-    Arena           object_arena;
     Linux_Object    *free_objects;
 } linux_state;
 
@@ -55,17 +54,10 @@ function u64 linux_get_cpu_frequency(void);
 
 int main(int argc, char **argv) {
 
-    /* allocate the program's memory */
-    u64 size = PROGRAM_MEMORY_CAPACITY;
-    void *memory = mmap(NULL, size, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
-    if (!memory) {
-        fprintf(stderr, "Failed to allocate %zu bytes of memory.\n", size);
-        return 1;
-    }
-    Arena arena = arena_init(memory, size);
+    linux_state.arena = arena_alloc(default_arena_capacity);
 
     /* setup the thread context */
-    tctx = tctx_init(&arena, .name = str8_lit("Main"));
+    tctx = tctx_init(arena, str8_lit("Main"));
 
     /* allocate linux memory */
     linux_state.arena = arena_alloc(&arena, MiB(32));

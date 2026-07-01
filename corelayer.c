@@ -305,16 +305,17 @@ function f32 rand_f32_r(Rand_State *rng) {
 
 /*== Arenas =============================================*/
 
-function Arena *arena_alloc(u64 min_cap) {
-    u64 clamped_cap = biggest(default_arena_capacity, min_cap);
+function Arena *arena_alloc_(Arena_Params *params) {
+    u64 clamped_cap = biggest(default_arena_capacity, params->min_cap);
     u64 req_size = clamped_cap + ARENA_HEADER_SIZE;
-    void *memory = _aligned_malloc(req_size, default_arena_page_alignment);
+    void *memory = aligned_malloc(req_size, default_arena_page_alignment);
     mem_zero(memory, req_size);
 
     Arena *result = (Arena *)memory;
     result->current = result;
     result->base = (u8 *)memory + ARENA_HEADER_SIZE;
     result->cap = clamped_cap;
+    result->name = params->name;
 
     return result;
 }
@@ -349,7 +350,7 @@ function void *arena_push(Arena *arena, u64 size, u64 align, b32 clear) {
     u64 pos = align_pow2(arena->current->pos, align);
 
     if (pos + size > arena->current->cap) {
-        Arena *new_arena = arena_alloc(size);
+        Arena *new_arena = arena_alloc();
         new_arena->prev = arena->current;
         arena->current = new_arena;
         pos = align_pow2(arena->current->pos, align);
@@ -853,17 +854,16 @@ function String8 str8_list_join(Arena *arena, String8_List *list, String8_Join *
 /*== Logging ============================================*/
 
 function void log_frame_begin(void) {
-    Log_Context *log = &tctx->log;
-    Log_Frame *frame = push_array(log->arena, Log_Frame, 1);
+    Log_Frame *frame = push_array(tctx_selected()->arena, Log_Frame, 1);
     if (frame) {
-        sll_stack_push(log->top_frame, frame);
-        frame->arena_mark = arena_mark(log->arena);
+        sll_stack_push(tctx_selected()->top_frame, frame);
+        frame->arena_mark = arena_mark(tctx_selected()->arena);
     }
 }
 
 function String8 log_frame_peek(Arena *arena, int mask) {
     String8 result = {0};
-    Log_Frame *frame = tctx_selected()->log.top_frame;
+    Log_Frame *frame = tctx_selected()->top_frame;
     if (frame && arena) {
         Temp_Arena scratch = begin_scratch(&arena, 1);
         String8_List list = {0};
@@ -882,13 +882,12 @@ function String8 log_frame_peek(Arena *arena, int mask) {
 
 function String8 log_frame_end(Arena *arena, int mask) {
     String8 result = {0};
-    if (tctx && arena) {
-        Log_Context *log = &tctx_selected()->log;
-        Log_Frame *frame = log->top_frame;
+    if (tctx_selected() && arena) {
+        Log_Frame *frame = tctx_selected()->top_frame;
         if (frame) {
             result = log_frame_peek(arena, mask);
-            sll_stack_pop(log->top_frame);
-            arena_rewind(log->arena, frame->arena_mark);
+            sll_stack_pop(tctx_selected()->top_frame);
+            arena_rewind(tctx_selected()->arena, frame->arena_mark);
         }
     }
     return result;
@@ -902,12 +901,11 @@ function void log_frame_end_and_print(Arena *arena, int mask) {
 }
 
 function void log_emit(Log_Level level, String8 string) {
-    Log_Context *log = &tctx_selected()->log;
-    Log_Frame *frame = log->top_frame;
+    Log_Frame *frame = tctx_selected()->top_frame;
     if (frame) {
-        Log_Message *message = push_array(log->arena, Log_Message, 1);
+        Log_Message *message = push_array(tctx_selected()->arena, Log_Message, 1);
         if (message) {
-            String8 copy = str8_copy(log->arena, string);
+            String8 copy = str8_copy(tctx_selected()->arena, string);
             message->msg = copy;
             message->level = level;
             sll_queue_push(frame->first, frame->last, message);
@@ -922,7 +920,7 @@ function void log_emitf(Log_Level level, char *fmt, ...) {
     vsnprintf(buffer, sizeof(buffer), fmt, args);
     va_end(args);
     size_t len = strlen(buffer);
-    uint8_t *cstr = push_array(tctx->log.arena, uint8_t, len);
+    uint8_t *cstr = push_array(tctx_selected()->arena, uint8_t, len);
     memcpy(cstr, buffer, len);
     log_emit(level, (String8){.ptr = cstr, .length = len});
 }
@@ -972,7 +970,7 @@ function void profiler_end_and_print(void) {
         if (block->tsc_elapsed) {
             u64 exclusive_elapsed = block->tsc_elapsed - block->tsc_elapsed_children;
             f32 exclusive_percent = 100.0f*exclusive_elapsed/total_elapsed;
-            printf("Thread [%.*s] - %.*s: %zu cycles (%.2f%%)\n", str8_varg(tctx_selected()->name), str8_varg(block->label), exclusive_elapsed, exclusive_percent);
+            printf("Thread [%.*s] - %.*s: %llu cycles (%.2f%%)\n", str8_varg(tctx_selected()->name), str8_varg(block->label), exclusive_elapsed, exclusive_percent);
         }
     }
 }
@@ -981,27 +979,15 @@ function void profiler_end_and_print(void) {
 
 /*== Thread Context =====================================*/
 
-function Thread_Context *tctx_init_(Arena *arena, String8 name, Thread_Context_Params *params) {
+function Thread_Context *tctx_create(String8 name) {
+    Arena *arena = arena_alloc();
     Thread_Context *result = push_array(arena, Thread_Context, 1);
     if (result) {
+        result->arena = arena;
+        result->scratch[0] = arena_alloc();
+        result->scratch[1] = arena_alloc();
 
         result->name = name;
-
-        /* initialize scratch arenas */
-        size_t scratch_size = params->scratch_size;
-        if (!scratch_size) {
-            scratch_size = MiB(64);
-        }
-
-        /* initialize logging */
-        size_t log_size = params->log_size;
-        if (!log_size) {
-            log_size = MiB(4);
-        }
-
-        result->arenas[0] = arena_alloc(scratch_size);
-        result->arenas[1] = arena_alloc(scratch_size);
-        result->log.arena = arena_alloc(log_size);
 
         /* initialize static rng */
         result->rand_state.state = 0x853c49e6748fea9bULL;
@@ -1010,20 +996,25 @@ function Thread_Context *tctx_init_(Arena *arena, String8 name, Thread_Context_P
     }
     return result;
 }
+function void tctx_destroy(Thread_Context *tctx) {
+    arena_free(tctx->scratch[0]);
+    arena_free(tctx->scratch[1]);
+    arena_free(tctx->arena);
+}
 
 function Arena *tctx_get_scratch(Arena **conflicts, int count) {
     Arena *result = 0;
     if (tctx) {
-        for (int i = 0; i < arrcount(tctx->arenas); i += 1) {
+        for (int i = 0; i < arrcount(tctx->scratch); i += 1) {
             b32 has_conflict = false;
             for (int j = 0; j < count; j += 1) {
-                if (&tctx->arenas[i] == &conflicts[j]) {
+                if (&tctx->scratch[i] == &conflicts[j]) {
                     has_conflict = true;
                     break;
                 }
             }
             if (!has_conflict) {
-                result = tctx->arenas[i];
+                result = tctx->scratch[i];
                 break;
             }
         }
@@ -1089,11 +1080,13 @@ void entry_point_caller(Arena *arena, i32 argc, char **argv) {
 
     /* parse arguments */
     Cmd_Line cmdline = {0};
-    cmdline.exe_name = str8_cstring(argv[0]);
-    cmdline.args = push_array(arena, String8, argc - 1);
-    for (int i = 1; i < argc; i += 1) {
-        cmdline.args[i-1] = str8_cstring(argv[i]);
-        cmdline.args_count += 1;
+    if (argc > 0) {
+        cmdline.exe_name = str8_cstring(argv[0]);
+        cmdline.args = push_array(arena, String8, argc - 1);
+        for (int i = 1; i < argc; i += 1) {
+            cmdline.args[i-1] = str8_cstring(argv[i]);
+            cmdline.args_count += 1;
+        }
     }
 
     entry_point(cmdline);

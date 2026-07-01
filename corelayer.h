@@ -4,7 +4,7 @@
 
 /*== Foreign Includes ================================*/
 
-#define _CRT_SECURE_nO_WARNINGS
+#define _CRT_SECURE_NO_WARNINGS
 
 #include <stdint.h>
 #include <stdlib.h>
@@ -25,6 +25,8 @@
 
 # if defined(_WIN32)
 #  define OS_WINDOWS 1
+# elif defined(__wasm__)
+#  define OS_WEB 1
 # elif defined(__gnu_linux__) || defined(__linux__)
 #  define OS_LINUX 1
 # elif defined(__APPLE__) && defined(__MACH__)
@@ -41,6 +43,10 @@
 #  define ARCH_ARM64 1
 # elif defined(__arm__)
 #  define ARCH_ARM32 1
+# elif defined(__wasm32__)
+#  define ARCH_WASM32 1
+# elif defined(__wasm64__)
+#  define ARCH_WASM64 1
 # else
 #  error Architecture not supported.
 # endif
@@ -97,13 +103,13 @@
 
 
 /* Architecture */
-#if defined(ARCH_X64)
+#if defined(ARCH_X64) || defined(ARCH_WASM64)
 # define ARCH_64BIT 1
-#elif defined(ARCH_X86)
+#elif defined(ARCH_X86) || defined(ARCH_WASM32)
 # define ARCH_32BIT 1
 #endif
 
-#if ARCH_ARM32 || ARCH_ARM64 || ARCH_X64 || ARCH_X86
+#if ARCH_ARM32 || ARCH_ARM64 || ARCH_X64 || ARCH_X86 || ARCH_WASM32 || ARCH_WASM64
 # define ARCH_LITTLE_ENDIAN 1
 #else
 # error Endianness of this architecture not understood.
@@ -223,6 +229,8 @@ typedef uint64_t    b64;
 typedef float   f32;
 typedef double  f64;
 
+/* forward declarations */
+typedef struct Arena Arena;
 
 
 
@@ -277,13 +285,29 @@ typedef union {
 
 typedef union {
     struct {
+        Range_U32 x;
+        Range_U32 y;
+    };
+    Range_U32 axes[2];
+} Range_2xU32;
+
+typedef union {
+    struct {
         u64 min;
         u64 max;
     };
     u64 v[2];
 } Range_U64;
 
-/* evenyl distributes m_count into n_count ranges and returns the n_idx'th range */
+typedef union {
+    struct {
+        Range_U64 x;
+        Range_U64 y;
+    };
+    Range_U64 axes[2];
+} Range_2xU64;
+
+/* evenly distributes m_count into n_count ranges and returns the n_idx'th range */
 function Range_U64 m_range_from_n_index_m_count(u64 n_idx, u64 n_count, u64 m_count);
 
 /* range helpers */
@@ -432,8 +456,7 @@ function void *virtual_alloc(u64 size);
 function void *virtual_reserve(u64 size);
 function void virtual_commit(void *ptr, u64 size);
 
-function void aligned_malloc(u64 size, u64 align);
-function void aligned_realloc(u64 size, u64 align);
+function void *aligned_malloc(u64 size, u64 align);
 function void aligned_free(void *ptr);
 
 
@@ -467,7 +490,9 @@ function void aligned_free(void *ptr);
 #define no_op ((void)0)
 
 /* static assert */
+#ifndef static_assert
 #define static_assert(c, id) global u8 macro_concat(id, __LINE__)[(c)?1:-1]
+#endif
 
 
 
@@ -521,13 +546,13 @@ function void aligned_free(void *ptr);
 #  define ins_atomic_u64_dec_eval(x)              __atomic_sub_fetch((u64 *)(x), 1, __ATOMIC_SEQ_CST)
 #  define ins_atomic_u64_eval_assign(x,c)         __atomic_exchange_n(x, c, __ATOMIC_SEQ_CST)
 #  define ins_atomic_u64_add_eval(x,c)            __atomic_add_fetch((u64 *)(x), c, __ATOMIC_SEQ_CST)
-#  define ins_atomic_u64_eval_cond_assign(x,k,c)  ({ u64 _new = (c); __atomic_compare_exchange_n((U64 *)(x),&_new,(k),0,__ATOMIC_SEQ_CST,__ATOMIC_SEQ_CST); _new; })
+#  define ins_atomic_u64_eval_cond_assign(x,k,c)  ({ u64 _new = (c); __atomic_compare_exchange_n((u64 *)(x),&_new,(k),0,__ATOMIC_SEQ_CST,__ATOMIC_SEQ_CST); _new; })
 #  define ins_atomic_u32_eval(x)                  __atomic_load_n(x, __ATOMIC_SEQ_CST)
 #  define ins_atomic_u32_inc_eval(x)              __atomic_add_fetch((u32 *)(x), 1, __ATOMIC_SEQ_CST)
 #  define ins_atomic_u32_dec_eval(x)              __atomic_sub_fetch((u32 *)(x), 1, __ATOMIC_SEQ_CST)
 #  define ins_atomic_u32_add_eval(x,c)            __atomic_add_fetch((u32 *)(x), c, __ATOMIC_SEQ_CST)
 #  define ins_atomic_u32_eval_assign(x,c)         __atomic_exchange_n((x), (c), __ATOMIC_SEQ_CST)
-#  define ins_atomic_u32_eval_cond_assign(x,k,c)  ({ u32 _new = (c); __atomic_compare_exchange_n((U32 *)(x),&_new,(k),0,__ATOMIC_SEQ_CST,__ATOMIC_SEQ_CST); _new; })
+#  define ins_atomic_u32_eval_cond_assign(x,k,c)  ({ u32 _new = (c); __atomic_compare_exchange_n((u32 *)(x),&_new,(k),0,__ATOMIC_SEQ_CST,__ATOMIC_SEQ_CST); _new; })
 #  define ins_atomic_u8_eval_assign(x,c)          __atomic_exchange_n((x), (c), __ATOMIC_SEQ_CST)
 #  define ins_atomic_u8_or(x,c)                   __atomic_fetch_or((u8 *)(x), (u8)(c), __ATOMIC_SEQ_CST)
 #  define ins_atomic_u32_or(x,c)                  __atomic_fetch_or((u32 *)(x), (u32)(c), __ATOMIC_SEQ_CST)
@@ -539,6 +564,10 @@ function void aligned_free(void *ptr);
 # define ins_atomic_ptr_eval_cond_assign(x,k,c) (void *)ins_atomic_u64_eval_cond_assign((u64 *)(x), (u64)(k), (u64)(c))
 # define ins_atomic_ptr_eval_assign(x,c)        (void *)ins_atomic_u64_eval_assign((u64 *)(x), (u64)(c))
 # define ins_atomic_ptr_eval(x)                 (void *)ins_atomic_u64_eval((u64 *)x)
+#elif ARCH_32BIT
+# define ins_atomic_ptr_eval_cond_assign(x,k,c) (void *)ins_atomic_u32_eval_cond_assign((u32 *)(x), (u32)(k), (u32)(c))
+# define ins_atomic_ptr_eval_assign(x,c)        (void *)ins_atomic_u32_eval_assign((u32 *)(x), (u32)(c))
+# define ins_atomic_ptr_eval(x)                 (void *)ins_atomic_u32_eval((u32 *)x)
 #else
 # error Atomic intrinsics for pointers not defined for this architecture.
 #endif
@@ -546,8 +575,10 @@ function void aligned_free(void *ptr);
 
 /*== CPU Counters =======================================*/
 
-#if ARCH_X64 || ARCH_X64
+#if ARCH_X86 || ARCH_X64
 # define read_cpu_timestamp() __rdtsc()
+#elif ARCH_WASM32 || ARCH_WASM64
+# define read_cpu_timestamp() emscripten_get_now()
 #else
 # error CPU timer NYI for this architecture
 #endif
@@ -632,6 +663,23 @@ check_nil(nil,p) ? \
 #define sll_stack_push(f,n) sll_stack_push_n(f,n,next)
 #define sll_stack_pop(f) sll_stack_pop_n(f,next)
 
+
+
+/*== Pool Allocators ====================================*/
+
+/* pool alloc */
+#define pool_alloc(p,t) (\
+(check_nil(0,(p)->free))?\
+((p)->temp=push_array((p)->arena,t,1)):\
+(((p)->temp=(p)->free),sll_stack_pop((p)->free)),\
+(dll_push_back((p)->first,(p)->last,(p)->temp)),\
+((p)->count+=1),\
+((p)->last))
+
+/* pool free */
+#define pool_free(p,n) (\
+(dll_remove((p)->first,(p)->last,(n))),\
+(sll_stack_push((p)->free,(n))))
 
 
 /*== Basic Constants ====================================*/
@@ -837,57 +885,10 @@ read_only global u8 base64_reverse[128] =
 };
 
 
-/*== Arenas =============================================*/
-
-global const u64 default_arena_capacity = MiB(4);
-global const u64 default_arena_page_alignment = KiB(4);
-
-typedef struct Arena Arena;
-struct Arena {
-    Arena *prev;
-    Arena *current;
-
-    // global offset
-    u64 offset;
-
-    // local offset
-    void *base;
-    u64 pos;
-    u64 cap;
-};
-
-#define ARENA_HEADER_SIZE 128
-static_assert(sizeof(Arena) <= ARENA_HEADER_SIZE, arena_header_size_check);
-
-/* arena api */
-function Arena *arena_alloc(u64 min_cap);
-function void arena_free(Arena *arena);
-function void arena_reset(Arena *arena);
-function void arena_rewind(Arena *arena, u64 mark);
-function u64 arena_pos(Arena *arena);
-function void *arena_push(Arena *arena, u64 size, u64 align, b32 clear);
-
-/* arena push helpers */
-#define push_array_no_zero_aligned(a, T, c, align) (T *)arena_push((a), sizeof(T)*(c), (align), (0))
-#define push_array_aligned(a, T, c, align) (T *)arena_push((a), sizeof(T)*(c), (align), (1))
-#define push_array_no_zero(a, T, c) push_array_no_zero_aligned(a, T, c, biggest(8, alignof(T)))
-#define push_array(a, T, c) push_array_aligned(a, T, c, biggest(8, alignof(T)))
-
-/* temp arenas */
-typedef struct {
-    Arena *arena;
-    u64 mark;
-} Temp_Arena;
-function Temp_Arena begin_temp(Arena *arena);
-function void end_temp(Temp_Arena arena);
-
-
 
 /*== Strings ============================================*/
 
-
 /* base string types */
-
 typedef struct {
     u8 *ptr;
     u64 length;
@@ -1030,6 +1031,59 @@ function String8 str8_list_join(Arena *arena, String8_List *list, String8_Join *
 
 
 
+/*== Arenas =============================================*/
+
+global const u64 default_arena_capacity = MiB(4);
+global const u64 default_arena_page_alignment = KiB(4);
+
+typedef struct {
+    String8 name;
+    u64 min_cap;
+} Arena_Params;
+
+struct Arena {
+    Arena *prev;
+    Arena *current;
+
+    String8 name;
+
+    // global offset
+    u64 offset;
+
+    // local offset
+    void *base;
+    u64 pos;
+    u64 cap;
+};
+
+#define ARENA_HEADER_SIZE 128
+static_assert(sizeof(Arena) <= ARENA_HEADER_SIZE, "arena_header_size_check");
+
+/* arena api */
+function Arena *arena_alloc_(Arena_Params *params);
+#define arena_alloc(...) arena_alloc_(&(Arena_Params){ __VA_ARGS__ })
+function void arena_free(Arena *arena);
+function void arena_reset(Arena *arena);
+function void arena_rewind(Arena *arena, u64 mark);
+function u64 arena_pos(Arena *arena);
+function void *arena_push(Arena *arena, u64 size, u64 align, b32 clear);
+
+/* arena push helpers */
+#define push_array_no_zero_aligned(a, T, c, align) (T *)arena_push((a), sizeof(T)*(c), (align), (0))
+#define push_array_aligned(a, T, c, align) (T *)arena_push((a), sizeof(T)*(c), (align), (1))
+#define push_array_no_zero(a, T, c) push_array_no_zero_aligned(a, T, c, biggest(8, alignof(T)))
+#define push_array(a, T, c) push_array_aligned(a, T, c, biggest(8, alignof(T)))
+
+/* temp arenas */
+typedef struct {
+    Arena *arena;
+    u64 mark;
+} Temp_Arena;
+function Temp_Arena begin_temp(Arena *arena);
+function void end_temp(Temp_Arena arena);
+
+
+
 /*== Logging ============================================*/
 
 typedef enum {
@@ -1053,11 +1107,6 @@ struct Log_Frame {
     Log_Message *last;
     u64 arena_mark;
 };
-
-typedef struct {
-    Arena *arena;
-    Log_Frame *top_frame;
-} Log_Context;
 
 function void log_frame_begin(void);
 function String8 log_frame_peek(Arena *arena, i32 mask);
@@ -1202,22 +1251,17 @@ typedef struct {
 
 typedef struct {
     Arena *arena;
-    Arena *arenas[2];
+    Arena *scratch[2];
     String8 name;
-    Log_Context log;
+    Log_Frame *top_frame;
     Lane_Context lane_ctx;
     Rand_State rand_state;
     Profiler profiler;
 } Thread_Context;
 
-typedef struct {
-    String8 name;
-    u64 scratch_size;
-    u64 log_size;
-} Thread_Context_Params;
-
-function Thread_Context *tctx_init_(Arena *arena, String8 name, Thread_Context_Params *params);
-#define tctx_init(arena, name, ...) tctx_init_(arena, name, &(Thread_Context_Params){ __VA_ARGS__ })
+/* create and destroy */
+function Thread_Context *tctx_create(String8 name);
+function void tctx_destroy(Thread_Context *tctx);
 
 /* set the thread_static context pointer */
 function void tctx_select(Thread_Context *ctx);
@@ -1244,6 +1288,10 @@ function void tctx_lane_barrier_wait(void *broadcast_ptr, u64 broadcast_size, u6
 
 /*== System API =========================================*/
 /* implemented per OS */
+
+#if OS_WEB
+#include <emscripten/emscripten.h>
+#endif
 
 typedef struct {
     String8 machine_name;
