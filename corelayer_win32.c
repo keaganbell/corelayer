@@ -45,7 +45,6 @@ global struct {
 
     /* sync allocation */
     CRITICAL_SECTION object_mutex;
-    Arena *object_arena;
     Win32_Object *free_objects;
 } win32_state;
 
@@ -63,10 +62,10 @@ int main(int argc, char **argv) {
     win32_state.start_time = now_time_us();
 
     /* allocate windows memory */
-    win32_state.arena = arena_alloc(MiB(32));
+    win32_state.arena = arena_alloc();
 
     /* setup the thread context */
-    tctx = tctx_init(win32_state.arena, str8_lit("Main"));
+    tctx = tctx_create(str8_lit("Main"));
 
     /* try to allow large pages */
     b32 large_pages_allowed = false;
@@ -95,7 +94,6 @@ int main(int argc, char **argv) {
 
     /* sync object allocation */
     InitializeCriticalSection(&win32_state.object_mutex);
-    win32_state.object_arena = arena_alloc(MiB(8));
 
     /* initialize windows specific layers */
     // window allocations
@@ -108,6 +106,9 @@ int main(int argc, char **argv) {
     return 0;
 }
 
+#else
+void entry_point(Cmd_Line cmdline) {
+}
 #endif // NO_ENTRY_POINT
 
 
@@ -136,6 +137,13 @@ function System_Info *get_system_info(void) {
     return &win32_state.info;
 }
 
+function void *aligned_malloc(u64 size, u64 align) {
+    return _aligned_malloc(size, align);
+}
+function void aligned_free(void *ptr) {
+    _aligned_free(ptr);
+}
+
 
 
 /*== Threads ============================================*/
@@ -149,7 +157,7 @@ function Win32_Object *win32_object_alloc(Win32_Object_Kind kind) {
         if (result) {
             sll_stack_pop(win32_state.free_objects);
         } else {
-            result = push_array_no_zero(win32_state.object_arena, Win32_Object, 1);
+            result = push_array_no_zero(win32_state.arena, Win32_Object, 1);
         }
         debug_assert(result);
         mem_zero_struct(result);

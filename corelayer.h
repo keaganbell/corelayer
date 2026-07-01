@@ -452,10 +452,6 @@ function Vec3f32 rand_color(void);
 
 /*== Memory Allocation ==================================*/
 
-function void *virtual_alloc(u64 size);
-function void *virtual_reserve(u64 size);
-function void virtual_commit(void *ptr, u64 size);
-
 function void *aligned_malloc(u64 size, u64 align);
 function void aligned_free(void *ptr);
 
@@ -1057,7 +1053,7 @@ struct Arena {
 };
 
 #define ARENA_HEADER_SIZE 128
-static_assert(sizeof(Arena) <= ARENA_HEADER_SIZE, "arena_header_size_check");
+static_assert(sizeof(Arena) <= ARENA_HEADER_SIZE, arena_header_size_check);
 
 /* arena api */
 function Arena *arena_alloc_(Arena_Params *params);
